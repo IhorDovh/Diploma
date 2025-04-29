@@ -60,10 +60,22 @@ def yolo_detection(frame, model, IMAGE_SIZE, NAMES, COLORS, args):
     return overlay
 
 def async_yolo_processing():
-    global latest_frame, processed_overlay
+    global latest_frame, processed_overlay, processing_fps
+    frame_count = 0
+    start_processing_time = time.time()
+    
     while True:
         if latest_frame is not None:
+            frame_start_time = time.time()
             processed_overlay = yolo_detection(latest_frame.copy(), model, IMAGE_SIZE, NAMES, COLORS, args)
+            frame_count += 1
+            
+            # Обчислюємо FPS розпізнавання кожну секунду
+            elapsed_processing_time = time.time() - start_processing_time
+            if elapsed_processing_time >= 1.0:
+                processing_fps = frame_count / elapsed_processing_time
+                frame_count = 0
+                start_processing_time = time.time()
 
 if __name__ == '__main__':
     start_time = time.time()
@@ -85,12 +97,13 @@ if __name__ == '__main__':
     
     image_type, frame, cap = load_source(args.source)
     latest_frame, processed_overlay = None, None
+    processing_fps = 0.0  # Змінна для FPS розпізнавання
 
     processing_thread = threading.Thread(target=async_yolo_processing, daemon=True)
     processing_thread.start()
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frame_time = 1 / fps
+    video_fps = cap.get(cv2.CAP_PROP_FPS) if not image_type else 0
+    frame_time = 1 / video_fps if video_fps > 0 else 0
 
     while True:
         start_frame_time = time.time()
@@ -102,6 +115,11 @@ if __name__ == '__main__':
         latest_frame = frame.copy()
         overlay = processed_overlay if processed_overlay is not None else np.zeros_like(frame, dtype=np.uint8)
         result = cv2.addWeighted(frame, 1.0, overlay, 1.0, 0)
+
+        # Відображення FPS на відео
+        fps_text = f"Video FPS: {video_fps:.2f} | Detection FPS: {processing_fps:.2f}"
+        cv2.putText(result, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
         cv2.imshow("YOLO Detection", result)
 
         elapsed_time = time.time() - start_frame_time
@@ -116,3 +134,5 @@ if __name__ == '__main__':
     
     end_time = time.time()
     print(f"Execution time: {end_time - start_time:.2f} seconds")
+    print(f"Video FPS: {video_fps:.2f}")
+    print(f"Average Detection FPS: {processing_fps:.2f}")
