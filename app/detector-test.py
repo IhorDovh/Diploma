@@ -81,7 +81,7 @@ if __name__ == '__main__':
     start_time = time.time()
     
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", type=str, default="data/videos/road.mp4", help="Video")
+    parser.add_argument("--source", type=str, default="data/videos/idiots2.mp4", help="Video")
     parser.add_argument("--names", type=str, default="data/class.names", help="Object Names")
     parser.add_argument("--model", type=str, default="./models/yolo11n-old.onnx", help="Pretrained Model")
     parser.add_argument("--tresh", type=float, default=0.25, help="Confidence Threshold")
