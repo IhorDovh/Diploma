@@ -59,14 +59,13 @@ def yolo_detection(frame, model, IMAGE_SIZE, NAMES, COLORS, args):
     
     return overlay
 
-def async_yolo_processing():
+def async_yolo_processing(model, IMAGE_SIZE, NAMES, COLORS, args):
     global latest_frame, processed_overlay, processing_fps
     frame_count = 0
     start_processing_time = time.time()
     
     while True:
         if latest_frame is not None:
-            frame_start_time = time.time()
             processed_overlay = yolo_detection(latest_frame.copy(), model, IMAGE_SIZE, NAMES, COLORS, args)
             frame_count += 1
             
@@ -89,6 +88,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     model = cv2.dnn.readNet(args.model)
+    model.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
     
     IMAGE_SIZE = 640
     with open(args.names, "r") as f:
@@ -99,7 +99,8 @@ if __name__ == '__main__':
     latest_frame, processed_overlay = None, None
     processing_fps = 0.0  # Змінна для FPS розпізнавання
 
-    processing_thread = threading.Thread(target=async_yolo_processing, daemon=True)
+    # Запускаємо фоновий потік для обробки YOLO
+    processing_thread = threading.Thread(target=async_yolo_processing, args=(model, IMAGE_SIZE, NAMES, COLORS, args), daemon=True)
     processing_thread.start()
 
     video_fps = cap.get(cv2.CAP_PROP_FPS) if not image_type else 0
@@ -123,7 +124,7 @@ if __name__ == '__main__':
         cv2.imshow("YOLO Detection", result)
 
         elapsed_time = time.time() - start_frame_time
-        sleep_time = max(frame_time - elapsed_time, 0)  # Уникаємо від'ємного часу сну
+        sleep_time = max(frame_time - elapsed_time, 0)  # Уникаємо від’ємного часу сну
         time.sleep(sleep_time)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
