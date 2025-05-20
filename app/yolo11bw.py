@@ -217,13 +217,12 @@ if __name__ == '__main__':
     parser.add_argument("--model", type=str, default="./models/yolo11n-old.onnx", help="Pretrained Model")
     parser.add_argument("--tresh", type=float, default=0.25, help="Confidence Threshold")
     parser.add_argument("--thickness", type=int, default=2, help="Bounding Box Thickness")
-    parser.add_argument("--show_grayscale", action="store_true", help="Show grayscale input")
+    parser.add_argument("--show_grayscale", default=True, action="store_true", help="Show grayscale input")
     parser.add_argument("--show_model_view", action="store_true", help="Show what the model sees")
     parser.add_argument("--sharpness", type=int, default=1, choices=[1, 2, 3], 
                         help="Sharpness level (1=Standard, 2=Strong, 3=Extreme)")
     parser.add_argument("--preprocessing", type=int, default=0, choices=[0, 1, 2, 3, 4, 5, 6],
                         help="Preprocessing method (0=None, 1=CLAHE, 2=Bilateral, 3=Adaptive Threshold, 4=Sobel, 5=Morphological, 6=Normalization)")
-    parser.add_argument("--resize", type=int, default=600, help="Resize input video to this size (width and height)")
     args = parser.parse_args()
     
     model = cv2.dnn.readNet(args.model)
@@ -246,8 +245,7 @@ if __name__ == '__main__':
         "show_grayscale": args.show_grayscale,
         "show_model_view": args.show_model_view,
         "sharpness": args.sharpness,
-        "preprocessing": args.preprocessing,
-        "resize": args.resize
+        "preprocessing": args.preprocessing
     }
 
     processing_thread = threading.Thread(target=async_yolo_processing, daemon=True)
@@ -262,10 +260,6 @@ if __name__ == '__main__':
         ret, frame = cap.read()
         if not ret:
             break
-            
-        # Змінюємо розмір вхідного відео відповідно до заданого параметра
-        resize_dim = current_settings["resize"]
-        frame = cv2.resize(frame, (resize_dim, resize_dim))
 
         latest_frame = frame.copy()
         overlay = processed_overlay if processed_overlay is not None else np.zeros_like(frame, dtype=np.uint8)
@@ -299,12 +293,10 @@ if __name__ == '__main__':
         
         # Додамо підказку щодо зміни режимів перегляду та різкості
         cv2.putText(result, "Press 'g' for grayscale, 'm' for model view, 'c' for color", 
-                   (10, result.shape[0] - 85), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cv2.putText(result, "Press '1', '2', '3' to change sharpness level", 
                    (10, result.shape[0] - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cv2.putText(result, "Press '0'-'6' to change preprocessing method", 
+        cv2.putText(result, "Press '1', '2', '3' to change sharpness level", 
                    (10, result.shape[0] - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cv2.putText(result, f"Input size: {resize_dim}x{resize_dim} | Press '+'/'-' to resize", 
+        cv2.putText(result, "Press '0'-'6' to change preprocessing method", 
                    (10, result.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
         cv2.imshow("YOLO Detection", result)
@@ -345,15 +337,6 @@ if __name__ == '__main__':
                 current_settings["preprocessing"] = preproc_idx
                 preproc_names = ["None", "CLAHE", "Bilateral", "Adaptive Threshold", "Sobel", "Morphological", "Normalization"]
                 print(f"Preprocessing method set to {preproc_idx} ({preproc_names[preproc_idx]})")
-        # Зміна розміру відео
-        elif key == ord('+') or key == ord('='):  # + на клавіатурі часто потребує Shift, тому додаємо =
-            resize_dim = min(current_settings["resize"] + 50, 1200)  # Встановлюємо максимальний розмір 1200
-            current_settings["resize"] = resize_dim
-            print(f"Resize dimensions set to {resize_dim}x{resize_dim}")
-        elif key == ord('-') or key == ord('_'):  # Для зручності додаємо і _ (Shift + -)
-            resize_dim = max(current_settings["resize"] - 50, 300)  # Встановлюємо мінімальний розмір 300
-            current_settings["resize"] = resize_dim
-            print(f"Resize dimensions set to {resize_dim}x{resize_dim}")
     
     cap.release()
     cv2.destroyAllWindows()
