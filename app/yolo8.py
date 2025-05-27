@@ -108,7 +108,7 @@ if __name__ == '__main__':
     parser.add_argument("--nms_tresh", type=float, default=0.45, help="Поріг IoU для NMS.")
     parser.add_argument("--thickness", type=int, default=2, help="Товщина обмежувальної рамки.")
     parser.add_argument("--img_size", type=int, default=640, help="Розмір зображення для входу моделі (квадратне зображення, наприклад, 640 для 640x640).")
-    parser.add_argument("--target_fps", type=int, default=30, help="Цільовий FPS для відображення.") # Новий аргумент
+    parser.add_argument("--target_fps", type=int, default=30, help="Цільовий FPS для відображення.")
     args = parser.parse_args()
 
     try:
@@ -165,12 +165,36 @@ if __name__ == '__main__':
     TARGET_DISPLAY_FPS = args.target_fps
     target_display_frame_time = 1 / TARGET_DISPLAY_FPS if TARGET_DISPLAY_FPS > 0 else 0
 
+    # Variables to collect benchmark results
+    total_frames_processed = 0
+    total_display_frames = 0
+    total_processing_time = 0
+    total_display_time = 0
+    
+    benchmark_results = {
+        "source_file": args.source,
+        "model_path": args.model,
+        "confidence_threshold": args.tresh,
+        "nms_threshold": args.nms_tresh,
+        "input_image_size": args.img_size,
+        "target_display_fps": TARGET_DISPLAY_FPS,
+        "total_runtime_seconds": 0.0,
+        "average_detection_fps": 0.0,
+        "average_display_fps": 0.0,
+        "source_fps": 0.0
+    }
+
     if image_type:
         if initial_frame is not None:
             latest_frame = initial_frame.copy()
             print("Обробка зображення...")
+            processing_start = time.time()
             while processed_overlay is None and processing_thread.is_alive():
-                time.sleep(0.1)
+                time.sleep(0.01) # Reduced sleep for quicker response
+            processing_end = time.time()
+            total_processing_time = processing_end - processing_start
+            total_frames_processed = 1 # Only one frame for an image
+
             if processed_overlay is not None:
                 result = cv2.addWeighted(initial_frame, 1.0, processed_overlay, 1.0, 0)
                 cv2.imshow("YOLOv8 Detection", result)
@@ -185,18 +209,17 @@ if __name__ == '__main__':
                 print("Обробка зображення не вдалася.")
         else:
             print("Завантажене зображення було None, неможливо обробити.")
-    else:
+    else: # Video processing
         if cap is None or not cap.isOpened():
             print("Захоплення відео не відкрито. Вихід.")
             exit()
 
-        # video_fps_cap = cap.get(cv2.CAP_PROP_FPS) # Можна використовувати для інформації, але не для обмеження
-        actual_frames_displayed = 0
-        display_start_time = time.time()
-        display_fps_real = 0.0 # Реальний FPS відображення
+        benchmark_results["source_fps"] = cap.get(cv2.CAP_PROP_FPS)
 
+        display_frame_start_time = time.time()
+        
         while True:
-            loop_process_start_time = time.time() # Час початку ітерації циклу відображення
+            loop_process_start_time = time.time()
 
             ret, frame_read = cap.read()
             if not ret:
@@ -210,18 +233,12 @@ if __name__ == '__main__':
             else:
                 result = frame_read.copy()
 
-            actual_frames_displayed += 1
-            elapsed_display_time = time.time() - display_start_time
-            if elapsed_display_time >= 1.0:
-                display_fps_real = actual_frames_displayed / elapsed_display_time
-                actual_frames_displayed = 0
-                display_start_time = time.time()
-
-            fps_text = f"Display FPS: {display_fps_real:.2f} | Detection FPS: {processing_fps:.2f}"
+            total_display_frames += 1
+            
+            fps_text = f"Display FPS: {processing_fps:.2f} | Detection FPS: {processing_fps:.2f}" # processing_fps is already updated by the thread
             cv2.putText(result, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             cv2.imshow("YOLOv8 Detection", result)
 
-            # Обмеження FPS для відображення
             loop_process_end_time = time.time()
             processing_duration_this_loop = loop_process_end_time - loop_process_start_time
             
@@ -232,16 +249,28 @@ if __name__ == '__main__':
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
+        
+        # Calculate average display FPS after the loop
+        total_display_time = time.time() - display_frame_start_time
+        if total_display_time > 0:
+            benchmark_results["average_display_fps"] = total_display_frames / total_display_time
 
     if cap is not None:
         cap.release()
     cv2.destroyAllWindows()
-    latest_frame = None
+    latest_frame = None # Signal the processing thread to potentially stop or idle
 
     end_time = time.time()
-    print(f"Загальний час виконання: {end_time - start_time:.2f} секунд")
-    if not image_type and 'video_fps_cap' in locals() and cap.get(cv2.CAP_PROP_FPS) > 0: # перевіряємо чи cap ще доступний
-        print(f"FPS захоплення відео (джерела): {cap.get(cv2.CAP_PROP_FPS):.2f}")
-    print(f"Останнє зареєстроване FPS детекції: {processing_fps:.2f}")
-    if not image_type and 'display_fps_real' in locals():
-         print(f"Середній реальний FPS відображення: {display_fps_real:.2f} (якщо обробка займала менше {1/TARGET_DISPLAY_FPS:.3f}с на кадр)")
+    benchmark_results["total_runtime_seconds"] = end_time - start_time
+    benchmark_results["average_detection_fps"] = processing_fps # Last recorded processing FPS
+
+    # Print benchmark results for graph
+    print("\n" + "="*30)
+    print("Результати бенчмарку:")
+    print("="*30)
+    for key, value in benchmark_results.items():
+        print(f"{key.replace('_', ' ').capitalize()}: {value}")
+    print("="*30)
+
+    # Optional: You can also return these results if this code were part of a larger function
+    # return benchmark_results
