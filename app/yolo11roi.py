@@ -135,7 +135,8 @@ class ROIDetector:
 
 def yolo_detection(frame, model, IMAGE_SIZE, NAMES, COLORS, args, roi=None):
     """
-    Виконання YOLO детекції з підтримкою ROI
+    Виконання YOLO детекції з правильною обробкою ROI
+    Завжди використовуємо фіксований розмір входу для моделі (640x640)
     """
     overlay = np.zeros_like(frame, dtype=np.uint8)
     
@@ -144,16 +145,120 @@ def yolo_detection(frame, model, IMAGE_SIZE, NAMES, COLORS, args, roi=None):
         x, y, w, h = roi
         processing_frame = frame[y:y+h, x:x+w]
         roi_offset = (x, y)
+        
+        # Перевіряємо чи ROI достатньо великий
+        if w < 32 or h < 32:
+            return overlay, roi
+            
     else:
         processing_frame = frame
         roi_offset = (0, 0)
     
-    # YOLO детекція
-    blob = cv2.dnn.blobFromImage(processing_frame, 1/255.0, (IMAGE_SIZE, IMAGE_SIZE), swapRB=True, crop=False)
+    # ВАЖЛИВО: Завжди використовуємо фіксований розмір IMAGE_SIZE для моделі
+    # Модель очікує точно цей розмір!
+    blob = cv2.dnn.blobFromImage(
+        processing_frame, 
+        1/255.0, 
+        (IMAGE_SIZE, IMAGE_SIZE), 
+        swapRB=True, 
+        crop=False
+    )
+    
     model.setInput(blob)
     preds = model.forward().transpose((0, 2, 1))
     
-    image_height, image_width, _ = processing_frame.shape
+    # Коефіцієнти масштабування для перетворення координат назад
+    # З IMAGE_SIZE назад до розмірів processing_frame
+    image_height, image_width = processing_frame.shape[:2]
+    x_factor = image_width / IMAGE_SIZE
+    y_factor = image_height / IMAGE_SIZE
+    
+    class_ids, confs, boxes = [], [], []
+    for row in preds[0]:
+        conf = row[4]
+        classes_score = row[4:]
+        _, _, _, max_idx = cv2.minMaxLoc(classes_score)
+        class_id = max_idx[1]
+        if classes_score[class_id] > args.tresh:
+            confs.append(classes_score[class_id])
+            class_ids.append(class_id)
+            x_det, y_det, w_det, h_det = row[:4]
+            
+            # Перетворюємо координати з IMAGE_SIZE назад до розмірів processing_frame
+            left = int((x_det - 0.5 * w_det) * x_factor)
+            top = int((y_det - 0.5 * h_det) * y_factor)
+            width = int(w_det * x_factor)
+            height = int(h_det * y_factor)
+            boxes.append([left, top, width, height])
+    
+    # NMS
+    indexes = cv2.dnn.NMSBoxes(boxes, confs, 0.2, 0.5)
+    if len(indexes) > 0:
+        for i in indexes.flatten():
+            left, top, width, height = boxes[i]
+            class_id, score = class_ids[i], round(float(confs[i]), 3)
+            color = COLORS[class_id]
+            
+            # Коригуємо координати з урахуванням ROI offset
+            # Переносимо з координат processing_frame до координат повного кадру
+            actual_left = left + roi_offset[0]
+            actual_top = top + roi_offset[1]
+            
+            cv2.rectangle(overlay, (actual_left, actual_top), 
+                         (actual_left + width, actual_top + height), color, args.thickness)
+            text = f'{NAMES[class_id]} {score:.2f}'
+            cv2.putText(overlay, text, (actual_left, actual_top - 5), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+    
+    return overlay, roi
+
+
+def optimized_yolo_with_padding(frame, model, IMAGE_SIZE, NAMES, COLORS, args, roi=None):
+    """
+    Альтернативна версія з padding для збереження якості маленьких ROI
+    """
+    overlay = np.zeros_like(frame, dtype=np.uint8)
+    
+    if roi:
+        x, y, w, h = roi
+        processing_frame = frame[y:y+h, x:x+w]
+        roi_offset = (x, y)
+        
+        # Для дуже маленьких ROI додаємо padding
+        if w < IMAGE_SIZE // 2 or h < IMAGE_SIZE // 2:
+            # Обчислюємо потрібний padding
+            pad_w = max(0, (IMAGE_SIZE // 2 - w) // 2)
+            pad_h = max(0, (IMAGE_SIZE // 2 - h) // 2)
+            
+            # Розширюємо ROI з урахуванням меж кадру
+            new_x = max(0, x - pad_w)
+            new_y = max(0, y - pad_h)
+            new_w = min(frame.shape[1] - new_x, w + 2 * pad_w)
+            new_h = min(frame.shape[0] - new_y, h + 2 * pad_h)
+            
+            processing_frame = frame[new_y:new_y+new_h, new_x:new_x+new_w]
+            
+            # Оновлюємо offset
+            roi_offset = (new_x, new_y)
+            
+    else:
+        processing_frame = frame
+        roi_offset = (0, 0)
+    
+    # Завжди використовуємо фіксований розмір
+    blob = cv2.dnn.blobFromImage(
+        processing_frame, 
+        1/255.0, 
+        (IMAGE_SIZE, IMAGE_SIZE), 
+        swapRB=True, 
+        crop=False
+    )
+    
+    model.setInput(blob)
+    preds = model.forward().transpose((0, 2, 1))
+    
+    # Масштабування координат
+    image_height, image_width = processing_frame.shape[:2]
     x_factor = image_width / IMAGE_SIZE
     y_factor = image_height / IMAGE_SIZE
     
@@ -173,7 +278,6 @@ def yolo_detection(frame, model, IMAGE_SIZE, NAMES, COLORS, args, roi=None):
             height = int(h_det * y_factor)
             boxes.append([left, top, width, height])
     
-    # NMS
     indexes = cv2.dnn.NMSBoxes(boxes, confs, 0.2, 0.5)
     if len(indexes) > 0:
         for i in indexes.flatten():
@@ -181,7 +285,6 @@ def yolo_detection(frame, model, IMAGE_SIZE, NAMES, COLORS, args, roi=None):
             class_id, score = class_ids[i], round(float(confs[i]), 3)
             color = COLORS[class_id]
             
-            # Коригуємо координати з урахуванням ROI offset
             actual_left = left + roi_offset[0]
             actual_top = top + roi_offset[1]
             
@@ -193,9 +296,11 @@ def yolo_detection(frame, model, IMAGE_SIZE, NAMES, COLORS, args, roi=None):
     
     return overlay, roi
 
+
+# Оновлена функція async_yolo_processing
 def async_yolo_processing(model, IMAGE_SIZE, NAMES, COLORS, args, roi_detector, use_roi):
     """
-    Асинхронна обробка YOLO з ROI
+    Асинхронна обробка YOLO з виправленою ROI обробкою
     """
     global latest_frame, processed_overlay, processing_fps, current_roi
     frame_count = 0
@@ -209,18 +314,125 @@ def async_yolo_processing(model, IMAGE_SIZE, NAMES, COLORS, args, roi_detector, 
             roi = None
             if use_roi:
                 roi = roi_detector.detect_roi(frame_copy)
-                current_roi = roi  # Зберігаємо для візуалізації
+                current_roi = roi
             
-            # YOLO детекція
-            processed_overlay, _ = yolo_detection(frame_copy, model, IMAGE_SIZE, NAMES, COLORS, args, roi)
-            frame_count += 1
+            try:
+                # Використовуємо виправлену функцію
+                processed_overlay, _ = optimized_yolo_with_padding(
+                    frame_copy, model, IMAGE_SIZE, NAMES, COLORS, args, roi
+                )
+                frame_count += 1
+                
+                # Обчислюємо FPS
+                elapsed_processing_time = time.time() - start_processing_time
+                if elapsed_processing_time >= 1.0:
+                    processing_fps = frame_count / elapsed_processing_time
+                    frame_count = 0
+                    start_processing_time = time.time()
+                    
+            except Exception as e:
+                print(f"Error in YOLO processing: {e}")
+                # У разі помилки продовжуємо без обробки
+                processed_overlay = np.zeros_like(frame_copy, dtype=np.uint8)
+        
+        time.sleep(0.001)  # Невелика пауза для зменшення навантаження на CPU
+
+
+def adaptive_yolo_detection(frame, model, IMAGE_SIZE, NAMES, COLORS, args, roi=None):
+    """
+    Альтернативна версія з більш складним адаптивним масштабуванням
+    """
+    overlay = np.zeros_like(frame, dtype=np.uint8)
+    
+    if roi:
+        x, y, w, h = roi
+        processing_frame = frame[y:y+h, x:x+w]
+        roi_offset = (x, y)
+    else:
+        processing_frame = frame
+        roi_offset = (0, 0)
+    
+    original_height, original_width = processing_frame.shape[:2]
+    
+    # Визначаємо оптимальний розмір входу на основі розміру ROI
+    if roi:
+        # Для ROI використовуємо менший розмір входу для збереження деталей
+        roi_area = w * h
+        full_area = frame.shape[0] * frame.shape[1]
+        area_ratio = roi_area / full_area
+        
+        if area_ratio < 0.1:  # Дуже маленький ROI
+            input_size = 320
+        elif area_ratio < 0.25:  # Середній ROI
+            input_size = 416
+        else:  # Великий ROI
+            input_size = 640
+    else:
+        input_size = IMAGE_SIZE
+    
+    # Зберігаємо пропорції
+    aspect_ratio = original_width / original_height
+    if aspect_ratio > 1:
+        input_width = input_size
+        input_height = int(input_size / aspect_ratio)
+    else:
+        input_height = input_size
+        input_width = int(input_size * aspect_ratio)
+    
+    # Переконуємось що розміри кратні 32
+    input_width = max(32, (input_width // 32) * 32)
+    input_height = max(32, (input_height // 32) * 32)
+    
+    blob = cv2.dnn.blobFromImage(
+        processing_frame, 
+        1/255.0, 
+        (input_width, input_height), 
+        swapRB=True, 
+        crop=False
+    )
+    
+    model.setInput(blob)
+    preds = model.forward().transpose((0, 2, 1))
+    
+    # Коефіцієнти масштабування
+    x_factor = original_width / input_width
+    y_factor = original_height / input_height
+    
+    # Решта коду залишається такою ж...
+    class_ids, confs, boxes = [], [], []
+    for row in preds[0]:
+        conf = row[4]
+        classes_score = row[4:]
+        _, _, _, max_idx = cv2.minMaxLoc(classes_score)
+        class_id = max_idx[1]
+        if classes_score[class_id] > args.tresh:
+            confs.append(classes_score[class_id])
+            class_ids.append(class_id)
+            x_det, y_det, w_det, h_det = row[:4]
+            left = int((x_det - 0.5 * w_det) * x_factor)
+            top = int((y_det - 0.5 * h_det) * y_factor)
+            width = int(w_det * x_factor)
+            height = int(h_det * y_factor)
+            boxes.append([left, top, width, height])
+    
+    indexes = cv2.dnn.NMSBoxes(boxes, confs, 0.2, 0.5)
+    if len(indexes) > 0:
+        for i in indexes.flatten():
+            left, top, width, height = boxes[i]
+            class_id, score = class_ids[i], round(float(confs[i]), 3)
+            color = COLORS[class_id]
             
-            # Обчислюємо FPS розпізнавання
-            elapsed_processing_time = time.time() - start_processing_time
-            if elapsed_processing_time >= 1.0:
-                processing_fps = frame_count / elapsed_processing_time
-                frame_count = 0
-                start_processing_time = time.time()
+            actual_left = left + roi_offset[0]
+            actual_top = top + roi_offset[1]
+            
+            cv2.rectangle(overlay, (actual_left, actual_top), 
+                         (actual_left + width, actual_top + height), color, args.thickness)
+            text = f'{NAMES[class_id]} {score:.2f}'
+            cv2.putText(overlay, text, (actual_left, actual_top - 5), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+    
+    return overlay, roi
+
 
 if __name__ == '__main__':
     start_time = time.time()
