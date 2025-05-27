@@ -65,6 +65,10 @@ def yolo_detection_yolov8(frame, model, input_shape, class_names, colors, args):
 
     indexes = cv2.dnn.NMSBoxes(boxes, confs, args.tresh, args.nms_tresh)
 
+    # --- Початок: Розрахунок середньої впевненості для поточного кадру ---
+    current_frame_confidences = []
+    # --- Кінець: Розрахунок середньої впевненості для поточного кадру ---
+
     if len(indexes) > 0:
         for i in indexes.flatten():
             left, top, width, height = boxes[i]
@@ -78,17 +82,34 @@ def yolo_detection_yolov8(frame, model, input_shape, class_names, colors, args):
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             else:
                 print(f"Попередження: class_id {class_id} виходить за межі для class_names (довжина: {len(class_names)}).")
-    return overlay
+
+            # --- Додаємо впевненість до списку для розрахунку середньої ---
+            current_frame_confidences.append(score)
+            # --- Кінець: Додаємо впевненість до списку для розрахунку середньої ---
+
+    # --- Розрахунок середньої впевненості для поточного кадру ---
+    avg_confidence_this_frame = np.mean(current_frame_confidences) if current_frame_confidences else 0.0
+    # --- Кінець: Розрахунок середньої впевненості для поточного кадру ---
+
+    return overlay, avg_confidence_this_frame # Повертаємо overlay та середню впевненість
 
 def async_yolo_processing(model_ref, input_shape_ref, class_names_ref, colors_ref, args_ref):
-    global latest_frame, processed_overlay, processing_fps
+    global latest_frame, processed_overlay, processing_fps, total_detected_confidences, detected_frames_count
     frame_count = 0
     start_processing_time = time.time()
     while True:
         if latest_frame is not None:
             current_frame_to_process = latest_frame.copy()
             if current_frame_to_process is not None:
-                processed_overlay = yolo_detection_yolov8(current_frame_to_process, model_ref, input_shape_ref, class_names_ref, colors_ref, args_ref)
+                overlay, avg_confidence_this_frame = yolo_detection_yolov8(current_frame_to_process, model_ref, input_shape_ref, class_names_ref, colors_ref, args_ref)
+                processed_overlay = overlay # Оновлюємо глобальну змінну для відображення
+
+                # --- Додаємо дані для розрахунку загальної середньої впевненості ---
+                if avg_confidence_this_frame > 0: # Тільки якщо були детекції в кадрі
+                    total_detected_confidences += avg_confidence_this_frame
+                    detected_frames_count += 1
+                # --- Кінець: Додаємо дані для розрахунку загальної середньої впевненості ---
+
                 frame_count += 1
             elapsed_processing_time = time.time() - start_processing_time
             if elapsed_processing_time >= 1.0:
@@ -99,7 +120,7 @@ def async_yolo_processing(model_ref, input_shape_ref, class_names_ref, colors_re
             time.sleep(0.01)
 
 if __name__ == '__main__':
-    start_time = time.time()
+    overall_start_time = time.time() # Changed to overall_start_time for clarity
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=str, default="data/videos/idiots3.mp4", help="Джерело відео або шлях до файлу зображення/відео. '0' для веб-камери.")
     parser.add_argument("--names", type=str, default="data/class.names", help="Шлях до файлу з іменами класів об'єктів (наприклад, coco.names).")
@@ -157,6 +178,11 @@ if __name__ == '__main__':
     latest_frame, processed_overlay = None, None
     processing_fps = 0.0
 
+    # --- Нові глобальні змінні для агрегації впевненості ---
+    total_detected_confidences = 0.0
+    detected_frames_count = 0
+    # --- Кінець: Нові глобальні змінні ---
+
     processing_thread = threading.Thread(target=async_yolo_processing,
                                          args=(model, INPUT_SHAPE, CLASS_NAMES, COLORS, args),
                                          daemon=True)
@@ -165,12 +191,6 @@ if __name__ == '__main__':
     TARGET_DISPLAY_FPS = args.target_fps
     target_display_frame_time = 1 / TARGET_DISPLAY_FPS if TARGET_DISPLAY_FPS > 0 else 0
 
-    # Variables to collect benchmark results
-    total_frames_processed = 0
-    total_display_frames = 0
-    total_processing_time = 0
-    total_display_time = 0
-    
     benchmark_results = {
         "source_file": args.source,
         "model_path": args.model,
@@ -181,8 +201,13 @@ if __name__ == '__main__':
         "total_runtime_seconds": 0.0,
         "average_detection_fps": 0.0,
         "average_display_fps": 0.0,
-        "source_fps": 0.0
+        "source_fps": 0.0,
+        "overall_average_confidence": 0.0 # Новий показник
     }
+
+    total_frames_read = 0
+    display_start_time = time.time()
+    total_display_frames = 0
 
     if image_type:
         if initial_frame is not None:
@@ -192,8 +217,8 @@ if __name__ == '__main__':
             while processed_overlay is None and processing_thread.is_alive():
                 time.sleep(0.01) # Reduced sleep for quicker response
             processing_end = time.time()
-            total_processing_time = processing_end - processing_start
-            total_frames_processed = 1 # Only one frame for an image
+            # total_processing_time is not directly used for benchmark results here,
+            # as detection FPS is updated by the async thread.
 
             if processed_overlay is not None:
                 result = cv2.addWeighted(initial_frame, 1.0, processed_overlay, 1.0, 0)
@@ -207,6 +232,11 @@ if __name__ == '__main__':
                 cv2.waitKey(0)
             else:
                 print("Обробка зображення не вдалася.")
+            total_frames_read = 1
+            total_display_frames = 1
+            # For a single image, calculate overall average confidence if detections were made
+            if detected_frames_count > 0:
+                benchmark_results["overall_average_confidence"] = total_detected_confidences / detected_frames_count
         else:
             print("Завантажене зображення було None, неможливо обробити.")
     else: # Video processing
@@ -217,7 +247,7 @@ if __name__ == '__main__':
         benchmark_results["source_fps"] = cap.get(cv2.CAP_PROP_FPS)
 
         display_frame_start_time = time.time()
-        
+
         while True:
             loop_process_start_time = time.time()
 
@@ -226,6 +256,8 @@ if __name__ == '__main__':
                 print("Кінець відео потоку або неможливо прочитати кадр.")
                 break
 
+            total_frames_read += 1 # Count frames read from source
+
             latest_frame = frame_read.copy()
             current_overlay = processed_overlay
             if current_overlay is not None:
@@ -233,15 +265,15 @@ if __name__ == '__main__':
             else:
                 result = frame_read.copy()
 
-            total_display_frames += 1
-            
-            fps_text = f"Display FPS: {processing_fps:.2f} | Detection FPS: {processing_fps:.2f}" # processing_fps is already updated by the thread
+            total_display_frames += 1 # Count frames displayed
+
+            fps_text = f"Display FPS: {processing_fps:.2f} | Detection FPS: {processing_fps:.2f}"
             cv2.putText(result, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             cv2.imshow("YOLOv8 Detection", result)
 
             loop_process_end_time = time.time()
             processing_duration_this_loop = loop_process_end_time - loop_process_start_time
-            
+
             if target_display_frame_time > 0:
                 sleep_duration = target_display_frame_time - processing_duration_this_loop
                 if sleep_duration > 0:
@@ -249,19 +281,23 @@ if __name__ == '__main__':
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-        
-        # Calculate average display FPS after the loop
-        total_display_time = time.time() - display_frame_start_time
+
+        # Calculate average display FPS after the video loop finishes
+        total_display_time = time.time() - display_start_time
         if total_display_time > 0:
             benchmark_results["average_display_fps"] = total_display_frames / total_display_time
+        
+        # Calculate overall average confidence for video
+        if detected_frames_count > 0:
+            benchmark_results["overall_average_confidence"] = total_detected_confidences / detected_frames_count
 
     if cap is not None:
         cap.release()
     cv2.destroyAllWindows()
     latest_frame = None # Signal the processing thread to potentially stop or idle
 
-    end_time = time.time()
-    benchmark_results["total_runtime_seconds"] = end_time - start_time
+    overall_end_time = time.time()
+    benchmark_results["total_runtime_seconds"] = overall_end_time - overall_start_time
     benchmark_results["average_detection_fps"] = processing_fps # Last recorded processing FPS
 
     # Print benchmark results for graph
@@ -271,6 +307,3 @@ if __name__ == '__main__':
     for key, value in benchmark_results.items():
         print(f"{key.replace('_', ' ').capitalize()}: {value}")
     print("="*30)
-
-    # Optional: You can also return these results if this code were part of a larger function
-    # return benchmark_results
