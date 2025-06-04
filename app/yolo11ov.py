@@ -163,7 +163,7 @@ if __name__ == '__main__':
     overall_start_time = time.time()
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", type=str, default="data/videos/idiots3.mp4", help="Відео або зображення. '0' для веб-камери.")
+    parser.add_argument("--source", type=str, default="data/videos/IsomCar.mp4", help="Відео або зображення. '0' для веб-камери.")
     parser.add_argument("--names", type=str, default="data/class.names", help="Шлях до файлу імен класів.")
     parser.add_argument("--model", type=str, default="yolo11n_openvino_model", help="Шлях до OpenVINO моделі (папка).")
     parser.add_argument("--tresh", type=float, default=0.25, help="Поріг впевненості для детекції.")
