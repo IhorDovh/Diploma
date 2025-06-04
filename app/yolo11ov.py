@@ -192,6 +192,9 @@ def benchmark_openvino_config(model_path, device="CPU", num_iterations=10):
     return improvement
 
 
+    
+def async_yolo_processing(compiled_model_ref, input_layer_ref, output_layer_ref, NAMES_ref, COLORS_ref, args_ref):
+    """Асинхронна обробка кадрів в окремому потоці"""
     global latest_frame, processed_overlay, processing_fps, total_detected_confidences, detected_frames_count
     frame_count = 0
     start_processing_time = time.time()
@@ -219,7 +222,6 @@ def benchmark_openvino_config(model_path, device="CPU", num_iterations=10):
                     start_processing_time = time.time()
         else:
             time.sleep(0.01)
-
 if __name__ == '__main__':
     overall_start_time = time.time()
 
