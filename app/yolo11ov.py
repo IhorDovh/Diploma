@@ -130,7 +130,68 @@ def yolo_detection_openvino(frame, compiled_model, input_layer, output_layer, NA
     avg_confidence_this_frame = np.mean(current_frame_confidences) if current_frame_confidences else 0.0
     return overlay, avg_confidence_this_frame
 
-def async_yolo_processing(compiled_model_ref, input_layer_ref, output_layer_ref, NAMES_ref, COLORS_ref, args_ref):
+def benchmark_openvino_config(model_path, device="CPU", num_iterations=10):
+    """Бенчмарк тест різних конфігурацій OpenVINO"""
+    print("\n" + "="*60)
+    print("БЕНЧМАРК ТЕСТ OPENVINO КОНФІГУРАЦІЙ")
+    print("="*60)
+    
+    # Тестовий вхід
+    test_input = np.random.random((1, 3, 640, 640)).astype(np.float32)
+    
+    # Тест 1: Без оптимізацій
+    print("🔄 Тест 1: Базова конфігурація...")
+    core1 = Core()
+    model1 = core1.read_model(os.path.join(model_path, "yolo11n.xml"))
+    compiled_model1 = core1.compile_model(model1, device)
+    
+    start_time = time.time()
+    for _ in range(num_iterations):
+        results = compiled_model1([test_input])
+    base_time = time.time() - start_time
+    print(f"⏱️ Базовий час: {base_time:.3f} сек ({base_time/num_iterations*1000:.1f} мс/інференс)")
+    
+    # Тест 2: З оптимізаціями
+    print("🔄 Тест 2: Оптимізована конфігурація...")
+    core2 = Core()
+    model2 = core2.read_model(os.path.join(model_path, "yolo11n.xml"))
+    
+    # Оптимальна конфігурація для ARM64
+    optimized_config = {
+        "CPU_THREADS_NUM": "4",
+        "CPU_BIND_THREAD": "YES", 
+        "CPU_THROUGHPUT_STREAMS": "4",
+        "INFERENCE_NUM_THREADS": "4",
+        "PERFORMANCE_HINT": "LATENCY"
+    }
+    
+    # Застосування конфігурації
+    for key, value in optimized_config.items():
+        try:
+            core2.set_property("CPU", {key: value})
+        except:
+            pass
+    
+    compiled_model2 = core2.compile_model(model2, device, optimized_config)
+    
+    start_time = time.time()
+    for _ in range(num_iterations):
+        results = compiled_model2([test_input])
+    optimized_time = time.time() - start_time
+    print(f"⏱️ Оптимізований час: {optimized_time:.3f} сек ({optimized_time/num_iterations*1000:.1f} мс/інференс)")
+    
+    # Результати
+    improvement = ((base_time - optimized_time) / base_time) * 100
+    print(f"📈 Покращення продуктивності: {improvement:.1f}%")
+    if improvement > 0:
+        print("✅ Оптимізації працюють!")
+    else:
+        print("⚠️ Оптимізації не дали покращення")
+    print("="*60)
+    
+    return improvement
+
+
     global latest_frame, processed_overlay, processing_fps, total_detected_confidences, detected_frames_count
     frame_count = 0
     start_processing_time = time.time()
@@ -169,7 +230,13 @@ if __name__ == '__main__':
     parser.add_argument("--tresh", type=float, default=0.25, help="Поріг впевненості для детекції.")
     parser.add_argument("--thickness", type=int, default=2, help="Товщина рамки.")
     parser.add_argument("--device", type=str, default="AUTO", help="Пристрій OpenVINO (AUTO, CPU, GPU).")
+    parser.add_argument("--benchmark", action="store_true", help="Запустити бенчмарк тест оптимізацій.")
     args = parser.parse_args()
+
+    # Якщо запрошено бенчмарк
+    if args.benchmark:
+        benchmark_openvino_config(args.model, args.device)
+        exit()
 
     # Ініціалізація OpenVINO
     try:
@@ -185,10 +252,37 @@ if __name__ == '__main__':
         if not os.path.exists(model_xml):
             print(f"Помилка: Файл моделі не знайдено: {model_xml}")
             print("Переконайтеся, що модель експортована в формат OpenVINO")
+            print("Очікуваний файл: yolo11n.xml")
             exit()
             
         model = core.read_model(model_xml)
-        compiled_model = core.compile_model(model, args.device)
+        
+        # Оптимізація конфігурації для ARM64 (Radxa Zero 3E)
+        config = {}
+        if args.device == "CPU" or args.device == "AUTO":
+            print("Застосування оптимізацій для ARM64 CPU...")
+            config = {
+                # Використовувати всі 4 ядра RK3566
+                "CPU_THREADS_NUM": "4",
+                "CPU_BIND_THREAD": "YES",
+                "CPU_THROUGHPUT_STREAMS": "4",
+                # Оптимізація для ARM Cortex-A55
+                "INFERENCE_NUM_THREADS": "4",
+                "INFERENCE_PRECISION_HINT": "f32",
+                # Додаткові оптимізації
+                "PERFORMANCE_HINT": "LATENCY",  # або "THROUGHPUT"
+                "EXECUTION_MODE_HINT": "PERFORMANCE"
+            }
+            
+            # Встановити властивості для CPU
+            for key, value in config.items():
+                try:
+                    core.set_property("CPU", {key: value})
+                    print(f"✅ {key}: {value}")
+                except Exception as e:
+                    print(f"⚠️ Не вдалося встановити {key}: {e}")
+        
+        compiled_model = core.compile_model(model, args.device, config)
         
         # Отримати інформацію про входи та виходи
         input_layer = compiled_model.input(0)
@@ -197,6 +291,22 @@ if __name__ == '__main__':
         print(f"Модель завантажена на пристрій: {args.device}")
         print(f"Форма входу: {input_layer.shape}")
         print(f"Форма виходу: {output_layer.shape}")
+        
+        # Виведення інформації про застосовані оптимізації
+        if args.device == "CPU" or args.device == "AUTO":
+            try:
+                actual_threads = core.get_property("CPU", "CPU_THREADS_NUM")
+                print(f"✅ Фактична кількість потоків CPU: {actual_threads}")
+            except:
+                print("⚠️ Не вдалося отримати інформацію про потоки CPU")
+                
+            try:
+                streams = core.get_property("CPU", "CPU_THROUGHPUT_STREAMS")
+                print(f"✅ Кількість потоків throughput: {streams}")
+            except:
+                print("⚠️ Не вдалося отримати інформацію про throughput streams")
+        
+        print("="*50)
         
     except Exception as e:
         print(f"Помилка ініціалізації OpenVINO: {e}")
