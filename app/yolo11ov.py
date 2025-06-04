@@ -156,8 +156,6 @@ def async_yolo_processing(compiled_model_ref, input_layer_ref, output_layer_ref,
                     processing_fps = frame_count / elapsed_processing_time
                     frame_count = 0
                     start_processing_time = time.time()
-        else:
-            time.sleep(0.01)
 
 if __name__ == '__main__':
     overall_start_time = time.time()
@@ -268,8 +266,7 @@ if __name__ == '__main__':
         if initial_frame is not None:
             latest_frame = initial_frame.copy()
             print("Обробка зображення...")
-            while processed_overlay is None and processing_thread.is_alive():
-                time.sleep(0.01)
+            
 
             if processed_overlay is not None:
                 result = cv2.addWeighted(initial_frame, 1.0, processed_overlay, 1.0, 0)
